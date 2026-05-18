@@ -50,10 +50,15 @@ class ClickAction:
 @dataclass
 class RegionFocusConfig:
     enabled: bool = False
+    # nochange: execute the raw click first and retry with RegionFocus only if
+    # the screen barely changes. pre_click reproduces the old behavior and
+    # refines every click before execution. both does both.
+    trigger_policy: str = "nochange"
     crop_ratios: Tuple[float, ...] = (0.45, 0.65)
     min_crop_size: int = 384
     max_calls: int = 2
     confidence_threshold: float = 0.0
+    nochange_threshold: float = 2.0
     save_debug: bool = True
 
     @classmethod
@@ -78,12 +83,22 @@ class RegionFocusConfig:
         if not parsed_ratios:
             parsed_ratios = [0.45, 0.65]
 
+        trigger_policy = os.environ.get("EVO_REGION_FOCUS_TRIGGER") or getattr(args, "region_focus_trigger", "nochange")
+        trigger_policy = str(trigger_policy).strip().lower()
+        if trigger_policy == "always":
+            trigger_policy = "pre_click"
+        if trigger_policy not in {"nochange", "pre_click", "both"}:
+            logger.warning("Invalid EVO_REGION_FOCUS_TRIGGER=%s; using nochange", trigger_policy)
+            trigger_policy = "nochange"
+
         return cls(
             enabled=bool(getattr(args, "enable_region_focus", False)) or os.environ.get("EVO_REGION_FOCUS", "0").lower() in {"1", "true", "yes", "on"},
+            trigger_policy=trigger_policy,
             crop_ratios=tuple(parsed_ratios),
             min_crop_size=int(os.environ.get("EVO_REGION_FOCUS_MIN_CROP_SIZE") or getattr(args, "region_focus_min_crop_size", 384)),
             max_calls=max(1, int(os.environ.get("EVO_REGION_FOCUS_MAX_CALLS") or getattr(args, "region_focus_max_calls", 2))),
             confidence_threshold=float(os.environ.get("EVO_REGION_FOCUS_CONFIDENCE_THRESHOLD") or getattr(args, "region_focus_confidence_threshold", 0.0)),
+            nochange_threshold=float(os.environ.get("EVO_REGION_FOCUS_NOCHANGE_THRESHOLD") or getattr(args, "region_focus_nochange_threshold", 2.0)),
             save_debug=(os.environ.get("EVO_REGION_FOCUS_SAVE_DEBUG") or str(getattr(args, "region_focus_save_debug", True))).lower() not in {"0", "false", "no", "off"},
         )
 
@@ -180,6 +195,7 @@ class RegionFocusRefiner:
     ) -> Tuple[str, Dict[str, Any]]:
         info: Dict[str, Any] = {
             "enabled": self.config.enabled,
+            "trigger_policy": self.config.trigger_policy,
             "changed": False,
             "original_action": action,
             "refined_action": action,
