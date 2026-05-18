@@ -5,6 +5,7 @@ import os
 import time
 from wrapt_timeout_decorator import *
 from lib_results_logger import log_task_completion
+from mm_agents.evocua.region_focus import RegionFocusConfig, RegionFocusRefiner
 
 logger = logging.getLogger("desktopenv.experiment")
 
@@ -14,6 +15,27 @@ def setup_logger(example, example_result_dir):
     runtime_logger.setLevel(logging.DEBUG)
     runtime_logger.addHandler(logging.FileHandler(os.path.join(example_result_dir, "runtime.log")))
     return runtime_logger
+
+
+def _build_region_focus(args):
+    """Create a RegionFocus refiner when enabled by args or environment.
+
+    CLI flags are optional; without parser support you can still enable it with:
+        export EVO_REGION_FOCUS=1
+    """
+    config = RegionFocusConfig.from_args(args)
+    if not config.enabled:
+        return None
+    logger.info(
+        "RegionFocus enabled: crop_ratios=%s min_crop_size=%s max_calls=%s confidence_threshold=%s save_debug=%s",
+        config.crop_ratios,
+        config.min_crop_size,
+        config.max_calls,
+        config.confidence_threshold,
+        config.save_debug,
+    )
+    return RegionFocusRefiner(config)
+
 
 def run_single_example_evocua(agent, env, example, max_steps, instruction, args, example_result_dir, scores):
     """
@@ -38,6 +60,7 @@ def run_single_example_evocua(agent, env, example, max_steps, instruction, args,
     obs = env._get_obs() # Get the initial observation
     done = False
     step_idx = 0
+    region_focus = _build_region_focus(args)
 
     env.controller.start_recording()
     while not done and step_idx < max_steps:
@@ -64,10 +87,40 @@ def run_single_example_evocua(agent, env, example, max_steps, instruction, args,
 
         for action in actions:
             action_timestamp = datetime.datetime.now().strftime("%Y%m%d@%H%M%S%f")
-            logger.info("Executing action: %s", action)
+            raw_action = action
+            executed_action = action
+            region_focus_info = None
+
+            if region_focus is not None:
+                try:
+                    executed_action, region_focus_info = region_focus.refine_action(
+                        agent=agent,
+                        obs=obs,
+                        instruction=instruction,
+                        model_response=response,
+                        action=raw_action,
+                        step_idx=step_idx + 1,
+                        action_timestamp=action_timestamp,
+                        debug_dir=example_result_dir,
+                    )
+                except Exception as rf_e:
+                    # RegionFocus should never break the rollout. Fall back to the original action.
+                    logger.warning("RegionFocus refinement failed; falling back to raw action: %s", rf_e)
+                    region_focus_info = {
+                        "enabled": True,
+                        "changed": False,
+                        "original_action": raw_action,
+                        "refined_action": raw_action,
+                        "reason": f"exception: {rf_e}",
+                    }
+                    executed_action = raw_action
+
+            logger.info("Executing action: %s", executed_action)
+            if executed_action != raw_action:
+                logger.info("Raw action before RegionFocus: %s", raw_action)
             
             # Execute
-            obs, reward, done, info = env.step(action, args.sleep_after_execution)
+            obs, reward, done, info = env.step(executed_action, args.sleep_after_execution)
             
             logger.info("Reward: %.2f", reward)
             logger.info("Done: %s", done)
@@ -81,13 +134,16 @@ def run_single_example_evocua(agent, env, example, max_steps, instruction, args,
             log_entry = {
                 "step_num": step_idx + 1,
                 "action_timestamp": action_timestamp,
-                "action": action,
+                "raw_action": raw_action,
+                "action": executed_action,
                 "response": response,
                 "reward": reward,
                 "done": done,
                 "info": info,
                 "screenshot_file": screenshot_file
             }
+            if region_focus_info is not None:
+                log_entry["region_focus"] = region_focus_info
             # Add natural language info if available (S1 style)
             if info_dict:
                 log_entry["natural_language_action"] = info_dict.get("action")
