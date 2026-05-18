@@ -20,6 +20,7 @@
 ---
 
 ## 📢 Updates
+- **Local fork update**: Added an optional **RegionFocus-lite** visual test-time grounding refiner for click-like actions. It can refine EvoCUA's predicted click coordinates by zooming into local screenshot crops before executing actions.
 - **2026.03.31**: EvoCUA-32B achieves **56.48%** on WindowsAgentArena (WAA), surpassing the base model Qwen3-VL-32B-Thinking (42.9%) by ~13.6 points and UI-TARS-2 (50.6%) by ~6 points — demonstrating strong zero-shot cross-OS generalization 🆕
 - **2026.03.31**: Independent safety study by Yoshua Bengio & Dawn Song's teams ([arXiv:2602.08235](https://arxiv.org/abs/2602.08235)) shows **EvoCUA-32B has the lowest unintended-behavior rate (35.0%)** among all tested CUAs — the safest agent! 🆕
 - **2026.01.23**: EvoCUA ranked **#1** on [Hugging Face Daily Papers](https://huggingface.co/papers/2601.15876) 🏆
@@ -35,6 +36,7 @@
 - 📈 **Significant Improvements**: +11.7% over OpenCUA-72B (45.0%→56.7%), +15.1% over Qwen3-VL thinking (41.6%→56.7%), with fewer parameters and half the steps
 - 🖥️ **End-to-End Multi-Turn Automation**: Operates Chrome, Excel, PowerPoint, VSCode and more through screenshots and natural language instructions
 - 🧠 **Novel Training Method**: Our data synthesis and training approach consistently improves Computer Use capability across multiple open-source VLMs without degrading general performance
+- 🔍 **Optional RegionFocus-lite Extension**: This fork includes a training-free local crop refinement wrapper for click grounding experiments. It is disabled by default and should be evaluated separately from the official EvoCUA baseline.
 
 ---
 
@@ -160,6 +162,73 @@ python3 run_multienv_evocua.py \
   --prompt_style S2
 ```
 
+### Optional: Enable RegionFocus-lite
+
+This fork includes an optional **RegionFocus-lite** module for visual test-time grounding refinement. It is inspired by the RegionFocus idea from *Visual Test-time Scaling for GUI Agent Grounding* and is designed as a lightweight wrapper around EvoCUA's existing rollout loop.
+
+RegionFocus-lite is disabled by default. Enable it with environment variables before running evaluation:
+
+```bash
+export EVO_REGION_FOCUS=1
+export EVO_REGION_FOCUS_MAX_CALLS=1
+export EVO_REGION_FOCUS_CROP_RATIOS=0.45,0.65
+export EVO_REGION_FOCUS_MIN_CROP_SIZE=384
+export EVO_REGION_FOCUS_CONFIDENCE_THRESHOLD=0.0
+export EVO_REGION_FOCUS_SAVE_DEBUG=1
+```
+
+Then run the normal evaluation command. Use a separate result directory for ablation:
+
+```bash
+python3 run_multienv_evocua.py \
+  --headless \
+  --provider_name aws \
+  --observation_type screenshot \
+  --model EvoCUA-S2 \
+  --result_dir ./evocua_results_regionfocus \
+  --test_all_meta_path evaluation_examples/test_nogdrive.json \
+  --max_steps 50 \
+  --num_envs 30 \
+  --temperature 0.01 \
+  --max_history_turns 4 \
+  --coordinate_type relative \
+  --resize_factor 32 \
+  --prompt_style S2
+```
+
+RegionFocus-lite currently refines click-like actions, including `pyautogui.click`, `pyautogui.doubleClick`, `pyautogui.rightClick`, `pyautogui.middleClick`, and `pyautogui.tripleClick`. For each click-like action, it crops local screenshot regions around the predicted click point, asks the current EvoCUA model to re-localize the target inside the crop, maps the crop coordinate back to the original screenshot, and executes the refined action.
+
+Trajectory logs contain both the original and executed action:
+
+```json
+{
+  "raw_action": "original EvoCUA action",
+  "action": "executed action after RegionFocus-lite refinement",
+  "region_focus": {
+    "enabled": true,
+    "changed": true,
+    "reason": "refined",
+    "candidates": []
+  }
+}
+```
+
+Debug crops are saved under each task result directory when `EVO_REGION_FOCUS_SAVE_DEBUG=1`:
+
+```text
+<task_result_dir>/region_focus/
+```
+
+Recommended ablation protocol:
+
+| Setting | Description |
+|---|---|
+| Baseline | Original EvoCUA without RegionFocus-lite |
+| RF-1 | `EVO_REGION_FOCUS=1`, `EVO_REGION_FOCUS_MAX_CALLS=1` |
+| RF-2 | `EVO_REGION_FOCUS=1`, `EVO_REGION_FOCUS_MAX_CALLS=2` |
+
+> Note: RegionFocus-lite increases inference calls and may slow evaluation. It is an experimental extension in this fork, not part of the official EvoCUA result unless explicitly reported.
+
 ---
 
 ## 📁 Project Structure
@@ -167,7 +236,7 @@ python3 run_multienv_evocua.py \
 ```
 EvoCUA/
 ├── run_multienv_evocua.py      # Main entry point (multi-env parallel evaluation)
-├── lib_run_single.py           # Single task rollout logic (trajectory, screenshots, recording, scoring)
+├── lib_run_single.py           # Single task rollout logic; includes optional RegionFocus-lite hook
 ├── lib_results_logger.py       # Real-time result aggregation to results.json
 ├── desktop_env/                # OSWorld environment implementation
 │   ├── providers/              # VM providers (AWS/VMware/Docker/etc.)
@@ -175,6 +244,7 @@ EvoCUA/
 │   └── evaluators/             # Task evaluators
 ├── mm_agents/
 │   └── evocua/                 # EvoCUA agent (prompts, parsing, action generation)
+│       └── region_focus.py     # Optional RegionFocus-lite visual grounding refiner
 └── evaluation_examples/        # OSWorld task configurations
 ```
 
@@ -214,6 +284,17 @@ If you find EvoCUA useful in your research, please consider citing:
   author={Xue, Taofeng and Peng, Chong and Huang, Mianqiu and Guo, Linsen and Han, Tiancheng and Wang, Haozhe and Wang, Jianing and Zhang, Xiaocheng and Yang, Xin and Zhao, Dengchang and others},
   journal={arXiv preprint arXiv:2601.15876},
   year={2026}
+}
+```
+
+If you use the RegionFocus-lite extension in this fork, also cite the original RegionFocus paper:
+
+```bibtex
+@inproceedings{luo2025visual,
+  title={Visual Test-time Scaling for GUI Agent Grounding},
+  author={Luo, Tianjie and others},
+  booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision},
+  year={2025}
 }
 ```
 
