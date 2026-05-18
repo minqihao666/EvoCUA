@@ -113,4 +113,3 @@ def run_single_example_evocua(agent, env, example, max_steps, instruction, args,
     log_task_completion(example, result, example_result_dir, args)
 
     env.controller.end_recording(os.path.join(example_result_dir, "recording.mp4"))
-
